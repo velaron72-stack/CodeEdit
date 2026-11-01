@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Code Edit</string>
+    <string name="editor_clip_too_large">Фрагмент слишком большой для буфера обмена</string>
+    <string name="action_cut">Вырезать</string>
+    <string name="action_copy">Копировать</string>
+    <string name="action_paste">Вставить</string>
+    <string name="action_select_all">Выделить всё</string>
+</resources>
