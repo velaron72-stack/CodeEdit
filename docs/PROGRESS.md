@@ -5,11 +5,12 @@
 | Native TextMate engine (C++) | yes | ASan/UBSan | host (g++/clang) | corpus 95/95, themes 1008/1008, smoke 238 | no |
 | Core (documents, IO, search, replace, edit actions, folds) | yes | — | JVM (Kotlin 2.0.21) | 76 JUnit tests | no |
 | Highlight layer, settings schema, session/drafts, viewport math | yes | — | JVM | 36 JUnit tests | no |
-| `EditorView`, painter, touch, input connection, fonts | yes | grep-level cross-checks | **no** (needs Android SDK) | no | no |
-| Compose shell (`ui/*`), `MainActivity`, `CodeEditApp`, manifest, resources | yes | grep-level cross-checks | **no** | no | no |
-| Gradle build, `.github/workflows/build.yml` | yes | — | **never run** | — | — |
+| `EditorView`, painter, touch, input connection, fonts, `files/UriFiles` | yes | — | **yes, against the real `android.jar` (API 30)**, outside Gradle | no | no |
+| `EditorViewModel`, `SearchController`, `Tab`, `CodeEditApp`, `SettingsRepo` | yes | — | yes, but against small hand-written stubs of androidx (state, ViewModel, DataStore, DocumentFile), so API shapes of the real libraries are not verified | no | no |
+| Compose screens (`ui/{Theme,Components,EditorHost,EditorScreen,Menus,SearchPanel,Dialogs,SettingsScreen,FolderScreen,Root}`), `MainActivity`, manifest, resources | yes | grep-level cross-checks | **no** | no | no |
+| Gradle build, `.github/workflows/build.yml` | yes | — | **first CI run failed in the SDK-setup step (fixed); nothing after it has run yet** | — | — |
 
-Everything marked "no" under *Compiled* has only been read, not built: the first CI run may report compile errors there.
+Rows marked "no" under *Compiled* have only been read: the first full Gradle run may report compile errors there.
 112 JVM tests (listed in `app/src/test`) pass locally.
 
 Not done / known limits

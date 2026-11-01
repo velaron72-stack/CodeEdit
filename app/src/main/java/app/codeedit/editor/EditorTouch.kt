@@ -111,7 +111,7 @@ internal class EditorTouch(private val v: EditorView) {
         if (e.actionMasked != MotionEvent.ACTION_SCROLL || v.session == null) return false
         val vs = e.getAxisValue(MotionEvent.AXIS_VSCROLL)
         val hs = e.getAxisValue(MotionEvent.AXIS_HSCROLL)
-        if (e.isCtrlPressed && v.config.pinchZoom) { zoomBy(if (vs > 0) 1.08f else 1f / 1.08f); return true }
+        if ((e.metaState and android.view.KeyEvent.META_CTRL_ON) != 0 && v.config.pinchZoom) { zoomBy(if (vs > 0) 1.08f else 1f / 1.08f); return true }
         if (vs != 0f) scrollVertical(-vs * v.lineH * 3f)
         if (hs != 0f) scrollHorizontal(hs * v.charW * 6f)
         return true

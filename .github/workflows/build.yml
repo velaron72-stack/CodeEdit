@@ -22,13 +22,15 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK components (NDK, CMake)
+      # The ubuntu runner image already ships the Android SDK (ANDROID_HOME). The old setup-android action tried to install the
+      # removed "tools" package and failed, so sdkmanager from the image is used directly.
+      - name: Install SDK components (platform, build-tools, NDK, CMake)
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.0.12077973"
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKM" ] || SDKM="$(command -v sdkmanager)"
+          echo "sdkmanager: $SDKM  ANDROID_HOME=$ANDROID_HOME"
+          yes | "$SDKM" --licenses >/dev/null || true
+          "$SDKM" "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.0.12077973"
 
       - uses: gradle/actions/setup-gradle@v4
         with:

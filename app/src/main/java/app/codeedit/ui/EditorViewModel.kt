@@ -12,6 +12,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.codeedit.BuildConfig
 import app.codeedit.CodeEditApp
+import app.codeedit.core.doc.Coalesce
 import app.codeedit.core.doc.DocInfo
 import app.codeedit.core.doc.DocMode
 import app.codeedit.core.doc.DocumentListener
@@ -333,7 +334,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         tab.initialText?.let { txt ->
             tab.initialText = null
             session.editable?.let { d ->
-                d.replace(Pos(0, 0), Pos(0, 0), EditDocument.normalizeEol(txt), null, null, app.codeedit.core.doc.Coalesce.NONE)
+                d.replace(Pos(0, 0), Pos(0, 0), EditDocument.normalizeEol(txt), null, null, Coalesce.NONE)
                 session.selection = Selection.ZERO
                 tab.modified = tab.dirty
             }
