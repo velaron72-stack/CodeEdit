@@ -44,8 +44,37 @@ Nothing is faked for these: they are reported as "no grammar".
 * The first screenful of a freshly opened document is tokenized synchronously on the UI thread when an exact checkpoint is at most 300
   lines above it (bounded work, so the first frame is already coloured); everything else is tokenized on the worker threads.
 * Very long lines (default > 10 000 chars, setting `hl.maxLineChars`) are not tokenized (single plain token).
-* Files larger than `hl.maxFileMb` are not highlighted. Large files are tokenized lazily around the viewport from checkpoints;
-  for a jump to a far line the first paint uses the nearest checkpoint (can be slightly off until the frontier catches up).
+* Files larger than `hl.maxFileMb` are not highlighted. Large files are tokenized lazily around the viewport from checkpoints.
+  When the nearest exact checkpoint is further away than the engine can walk in ~120 ms (decided from the speed measured on this
+  device and grammar), the visible block starts cold: coloured at once from ~80 lines of context, exact later when the background
+  walk (frontier) reaches it. A cold start is wrong only inside a construct that began more than ~80 lines above the screen
+  (block comment, template string, fenced code block, `<script>`); on 4 370 lines of 19 sample languages it differed from the exact
+  result in 0.0 % of lines (the samples contain no such construct, so this is a lower bound).
+
+## Scheduling and speed (version 1.0.3)
+
+What the user reported: highlighting lagged behind scrolling and scrolling stuttered while it ran. Causes found in the code and fixed:
+
+1. The worker threads had Java priority `NORM-2`. On Android that is a nice value in the background group (little cores, a small share
+   of the CPU while the UI is busy). Now `NORM_PRIORITY`; the frontier is throttled by duty cycle (pause = max(8 ms, half of its last chunk)).
+2. A request for a block 15 000 lines from the nearest checkpoint walked all 15 000 lines before anything appeared (limit was a fixed
+   20 000 lines). The limit now follows the measured speed (`linesPerMs`, moving average): `speed x 120 ms`, between 200 and 20 000 lines.
+3. A request was never cancelled: after a fling the worker finished the walk for a block the user had already left. A newer viewport
+   request now stops the older walk between chunks (checkpoints recorded so far are kept).
+4. Chunks were a fixed 512-600 lines (up to seconds on a slow device with the session lock held); they are now sized to ~40 ms / ~25 ms.
+5. An approximate block that came into reach of the frontier replaced the pending viewport request (single slot). It now has its own
+   low-priority slot and never delays the visible block.
+6. Only the missing lines of the viewport are requested, not the whole window again.
+
+Measured on the host (g++ -O2, x86-64, one thread, `native-tests/bench_tokenize.cpp`, sample files repeated to 20 000 lines):
+XML 126 000 lines/s, JSON 185 000, Lua 85 000, Kotlin 72 000, Markdown 49 000, C 33 000, Python 23 000, Java 19 000, C++ 15 000,
+HTML 11 000, TypeScript 12 000, JavaScript 10 000. Callgrind: ~85 % of the time is inside Oniguruma (`match_at`, code-range tests).
+A phone is slower; that factor was NOT measured (assume 3-6x).
+
+Scheduling comparison with the real engine made 4x slower on purpose (JavaScript, 60 000 lines, one worker, no UI load, host; the
+harness is not shipped): jump to line 5 000 1 818 ms -> 73 ms; stop after a fling 1 744 ms -> 57 ms; reading speed (4 lines per
+frame), screen fully coloured in 89 of 150 frames -> 150 of 150. During a fling of 300 lines per frame nothing can be coloured in time
+either way. Real devices: not measured.
 
 ## Bundled languages (260)
 

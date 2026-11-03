@@ -4,7 +4,7 @@
 |---|---|---|---|---|---|
 | Native TextMate engine (C++) | yes | ASan/UBSan | host (g++/clang) | corpus 95/95, themes 1008/1008, smoke 238 | no |
 | Core (documents, IO, search, replace, edit actions, folds) | yes | — | JVM (Kotlin 2.0.21) | 76 JUnit tests | no |
-| Highlight layer (detector, content sniffer, extension memory, synchronous prefetch), settings schema, session/drafts, viewport math | yes | — | JVM | 59 JUnit tests, incl. real-engine ones | no |
+| Highlight layer (detector, content sniffer, extension memory, synchronous prefetch), settings schema, session/drafts, viewport math | yes | — | JVM | 63 JUnit tests, incl. real-engine ones | no |
 | Content sniffer on real files | yes | — | JVM | offline run on 3 443 files, see `HIGHLIGHT.md` (harness not shipped) | no |
 | `EditorView`, painter, touch, input connection, fonts, `files/UriFiles` | yes | — | **yes, against the real `android.jar` (API 30)**, outside Gradle | no | no |
 | `EditorViewModel`, `SearchController`, `Tab`, `CodeEditApp`, `SettingsRepo`, `RefreshRate` | yes | — | yes, but against small hand-written stubs of androidx (state, ViewModel, DataStore, DocumentFile), so API shapes of the real libraries are not verified | no | no |
@@ -12,7 +12,7 @@
 | Gradle build, `.github/workflows/build.yml` | yes | YAML parsed; the signing step's shell code was extracted and run locally for 4 cases (Secrets, new key, cached key, incomplete Secrets) | **not run on GitHub since the signing rewrite** | — | — |
 
 Rows marked "no" under *Compiled* have only been read: the first full Gradle run may report compile errors there.
-135 JVM tests (listed in `app/src/test`) pass locally; none is skipped (the real-engine tests ran with the host build of the native library).
+139 JVM tests (listed in `app/src/test`) pass locally; none is skipped (the real-engine tests ran with the host build of the native library).
 
 ## What the user saw on his phone (previous build, 1080x2400 screenshots)
 1. a blank band where the tab bar should be;
@@ -49,12 +49,20 @@ Rows marked "no" under *Compiled* have only been read: the first full Gradle run
 3. **Not done yet:** "cut half of the unneeded tabs" — the user said he would list which ones; the request is ambiguous (menu entries /
    settings sections / the tab strip), so nothing was cut beyond the menu above.
 
+## Changes for the "highlighting is slower than MT Manager and scrolling hangs while it runs" report (version 1.0.3) — not verified on a device
+Details and numbers in `HIGHLIGHT.md` ("Scheduling and speed"). Short version: worker threads no longer run in the Android background
+group; a newer viewport request cancels the walk of an older one; the exact-walk limit follows the measured engine speed instead of a
+fixed 20 000 lines; chunks are sized by time; only missing lines are requested. Tested: 4 new JUnit tests (cancellation, fast/slow
+engine decision, missing-lines-only) pass with the real and the fake engine; a host simulation with a 4x slower real engine showed
+the visible block coloured in 57-126 ms instead of 396-1 818 ms. The thread-priority part cannot be tested on the host.
+The engine itself was not made faster (host throughput table in `HIGHLIGHT.md`; `native-tests/bench_tokenize.cpp` reproduces it).
+
 ## Not done / known limits
 * No Smali / .gitignore grammar exists in the package (plain text).
 * VS Code `embeddedLanguages` ids not implemented; no minimap; in wrap mode Home/End move by logical line.
 * SAF writes cannot be atomic (provider limitation): the app writes a temp file, verifies, then overwrites in place and keeps a draft on failure.
 * Replace-all for editable documents runs on the UI thread (big files use the streaming path).
-* Highlight cold-start for lines > 20 000 from a checkpoint is approximate until the frontier catches up; frontier cap 1.5 M lines.
+* Highlight cold start (block further from an exact checkpoint than ~120 ms of engine work) is approximate until the frontier catches up; frontier cap 1.5 M lines.
 * Content sniffing is a heuristic (numbers in `HIGHLIGHT.md`); the language dialog overrides it.
 * The 90/120 Hz request is a hint: battery saver or an OEM per-app setting can keep 60 Hz.
 * The auto-generated signing key lives in the Actions cache (dropped after 7 idle days); a permanent key needs the Secrets.

@@ -82,7 +82,10 @@ class HighlightService(
     }
 
     private val ownedPool: ExecutorService? = if (workerExecutor == null) Executors.newFixedThreadPool(2) { r ->
-        Thread(r, "tm-highlight").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 2 }
+        // Normal priority on purpose: on Android a Java priority below 5 puts the thread into the background group (little cores,
+        // a few percent of the CPU while the UI is busy), which made highlighting several times slower than the engine can run.
+        // The frontier job is throttled by its own duty cycle instead (NativeHighlighter.pump).
+        Thread(r, "tm-highlight").apply { isDaemon = true; priority = Thread.NORM_PRIORITY }
     } else null
     private val worker: Executor = workerExecutor ?: ownedPool!!
 

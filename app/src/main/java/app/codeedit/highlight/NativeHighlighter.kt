@@ -18,6 +18,11 @@ import java.util.concurrent.locks.ReentrantLock
  * before the block (approximate: [isApproximate]). A low priority "frontier" job walks the document forward, recording
  * checkpoints, so that approximate regions are replaced by exact ones. Tokens live in a bounded LRU-ish cache.
  *
+ * Latency rules (measured speed of the engine on this device decides, see [linesPerMs]): a block is tokenized exactly only when
+ * its checkpoint is within ~[COLD_BUDGET_MS] of work, otherwise approximately right away; chunks are sized to ~[CHUNK_BUDGET_MS];
+ * a newer viewport request cancels the walk of an older one between chunks (the checkpoints it recorded are kept); approximate
+ * blocks are refined at low priority and never delay the visible block.
+ *
  * Threading: [tokensFor]/[requestRange]/[onDocumentChanged]/[invalidateAll]/[close] are UI-thread calls. Tokenization runs on
  * [worker]; the native session is only touched while holding [sessionLock]. A document that is only readable on the UI
  * thread (EditableDocument) is read through [ui] (the worker never holds [sessionLock] while waiting for the UI thread).
@@ -53,8 +58,12 @@ class NativeHighlighter internal constructor(
     private val running = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
     private val reqLock = Any()
-    private var reqFirst = -1                      // pending request (guarded by reqLock)
+    private var reqFirst = -1                      // pending viewport request (guarded by reqLock)
     private var reqLast = -1
+    private var refFirst = -1                      // pending low-priority refinement of an approximate block (guarded by reqLock)
+    private var refLast = -1
+    @Volatile private var linesPerMs = INITIAL_LINES_PER_MS   // moving average of the engine speed for this document
+    @Volatile private var frontierMs = 0L
     @Volatile private var lastFirst = 0            // last requested viewport (+margin), re-tokenized after edits
     @Volatile private var lastLast = 0
     @Volatile private var frontier = 0             // highest checkpoint line (state there is exact)
@@ -78,10 +87,13 @@ class NativeHighlighter internal constructor(
         val l = (lastLine + MARGIN).coerceAtMost(lc - 1)
         if (l < f) return
         lastFirst = f; lastLast = l
-        var missing = false
-        synchronized(cacheLock) { for (i in f..l) if (!cache.containsKey(i)) { missing = true; break } }
-        if (!missing) return
-        post(f, l)
+        var mf = -1; var ml = -1
+        synchronized(cacheLock) {
+            for (i in f..l) if (!cache.containsKey(i)) { mf = i; break }
+            if (mf >= 0) for (i in l downTo mf) if (!cache.containsKey(i)) { ml = i; break }
+        }
+        if (mf < 0) return
+        post(mf, ml)     // only what is missing: the lines already coloured are not tokenized again
     }
 
     /**
@@ -203,11 +215,46 @@ class NativeHighlighter internal constructor(
         }
     }
 
-    private fun takeRequest(): IntArray? = synchronized(reqLock) {
-        if (reqFirst < 0) null else intArrayOf(reqFirst, reqLast).also { reqFirst = -1; reqLast = -1 }
+    /** Low priority: an approximate block became reachable from an exact checkpoint. Never replaces a viewport request. */
+    private fun postRefine(first: Int, last: Int) {
+        synchronized(reqLock) { if (refFirst < 0) { refFirst = first; refLast = last } }
+        kick()
     }
 
-    private fun hasRequest(): Boolean = synchronized(reqLock) { reqFirst >= 0 }
+    private fun takeRequest(): IntArray? = synchronized(reqLock) {
+        when {
+            reqFirst >= 0 -> intArrayOf(reqFirst, reqLast).also { reqFirst = -1; reqLast = -1 }
+            refFirst >= 0 -> intArrayOf(refFirst, refLast).also { refFirst = -1; refLast = -1 }
+            else -> null
+        }
+    }
+
+    private fun hasRequest(): Boolean = synchronized(reqLock) { reqFirst >= 0 || refFirst >= 0 }
+
+    /** True when the viewport moved on: the walk for [first]..[last] is not needed any more. */
+    private fun superseded(first: Int, last: Int): Boolean = synchronized(reqLock) { reqFirst >= 0 && (reqFirst != first || reqLast != last) }
+
+    // ------------------------------------------------------------------ measured speed
+
+    private fun noteSpeed(lines: Int, nanos: Long) {
+        if (lines < 24 || nanos <= 0L) return
+        val v = lines * 1_000_000.0 / nanos
+        linesPerMs = (linesPerMs * 0.65 + v * 0.35).coerceIn(0.05, 500.0)
+    }
+
+    private inline fun timedTokenize(lines: Int, call: () -> IntArray?): IntArray? {
+        val t0 = System.nanoTime()
+        val r = call()
+        if (r != null) noteSpeed(lines, System.nanoTime() - t0)
+        return r
+    }
+
+    /** Distance (lines) from an exact checkpoint up to which an exact walk is cheaper than ~[COLD_BUDGET_MS]. */
+    private fun coldDistance(): Int = (linesPerMs * COLD_BUDGET_MS).toInt().coerceIn(MIN_COLD_DISTANCE, COLD_DISTANCE)
+
+    // a chunk shorter than the checkpoint stride would not record a checkpoint, so it never goes below one stride
+    private fun requestChunkLines(): Int = (linesPerMs * CHUNK_BUDGET_MS).toInt().coerceIn(MIN_CHUNK_LINES, CHUNK_LINES).coerceAtLeast(stride)
+    private fun frontierChunkLines(): Int = (linesPerMs * FRONTIER_BUDGET_MS).toInt().coerceIn(MIN_CHUNK_LINES, MAX_FRONTIER_CHUNK).coerceAtLeast(stride)
 
     private fun pump() {
         try {
@@ -216,11 +263,13 @@ class NativeHighlighter internal constructor(
                 if (req != null) {
                     val gen = generation.get()
                     val ok = processRequest(req[0], req[1], gen)
-                    if (!ok && generation.get() != gen) post(req[0].coerceAtLeast(0), req[1])   // invalidated meanwhile: redo
+                    if (!ok && generation.get() != gen) synchronized(reqLock) {                  // invalidated meanwhile: redo (unless a newer request waits)
+                        if (reqFirst < 0) { reqFirst = req[0].coerceAtLeast(0); reqLast = req[1] }
+                    }
                     continue
                 }
                 if (!frontierDone && frontierStep()) {
-                    try { Thread.sleep(FRONTIER_PAUSE_MS) } catch (_: InterruptedException) { return }
+                    try { Thread.sleep(maxOf(FRONTIER_PAUSE_MS, frontierMs / 2)) } catch (_: InterruptedException) { return }
                     continue
                 }
                 break
@@ -304,7 +353,7 @@ class NativeHighlighter internal constructor(
             applyPendingInvalidation()
             cp = backend.nearestCheckpoint(session, first)
         } finally { sessionLock.unlock() }
-        if (first - cp > COLD_DISTANCE) return runCold(first, last, gen)
+        if (first - cp > coldDistance()) return runCold(first, last, gen)
         return runExact(first, last, gen)
     }
 
@@ -324,7 +373,7 @@ class NativeHighlighter internal constructor(
         sessionLock.lock()
         try {
             if (closed.get() || session == 0L || generation.get() != gen) return false
-            val out = backend.tokenize(session, start, chunk.chars, chunk.offsets, chunk.count, first, true, false, LINE_TIME_LIMIT_MS) ?: return false
+            val out = timedTokenize(chunk.count) { backend.tokenize(session, start, chunk.chars, chunk.offsets, chunk.count, first, true, false, LINE_TIME_LIMIT_MS) } ?: return false
             val lastDone = start + chunk.count - 1
             store(out, first, lastDone, gen, cold = true)
         } finally { sessionLock.unlock() }
@@ -333,7 +382,7 @@ class NativeHighlighter internal constructor(
 
     private fun runExact(first: Int, last: Int, gen: Int): Boolean {
         var resume = first            // next line whose tokens we still need
-        var chunkLines = CHUNK_LINES
+        var chunkLines = requestChunkLines()
         var prevStart = -1
         while (resume <= last) {
             if (closed.get() || generation.get() != gen) return false
@@ -352,11 +401,13 @@ class NativeHighlighter internal constructor(
             sessionLock.lock()
             try {
                 if (closed.get() || session == 0L || generation.get() != gen) return false
-                val out = backend.tokenize(session, c, chunk.chars, chunk.offsets, chunk.count, maxOf(first, resume), false, true, 0) ?: return false
+                val out = timedTokenize(chunk.count) { backend.tokenize(session, c, chunk.chars, chunk.offsets, chunk.count, maxOf(first, resume), false, true, 0) } ?: return false
                 frontier = backend.maxCheckpoint(session)
                 store(out, maxOf(first, resume), c + chunk.count - 1, gen, cold = false)
             } finally { sessionLock.unlock() }
             resume = c + chunk.count
+            // the viewport moved on while this block was being walked: stop here (checkpoints recorded so far stay valid)
+            if (resume <= last && superseded(first, last)) return true
         }
         return true
     }
@@ -364,7 +415,7 @@ class NativeHighlighter internal constructor(
     /** Synchronous variant used right after an edit; sessionLock is held by the caller (UI thread). */
     private fun runBlock(first: Int, last: Int, fetch: (Int, Int) -> Chunk, gen: Int, notify: Boolean): Boolean {
         var resume = first
-        var chunkLines = CHUNK_LINES
+        var chunkLines = CHUNK_LINES      // one call: nobody waits for the lock here and the callers keep the distance short
         var prevStart = -1
         while (resume <= last) {
             if (generation.get() != gen) return false
@@ -373,7 +424,7 @@ class NativeHighlighter internal constructor(
             prevStart = c
             val chunk = fetch(c, minOf(last + 1, c + chunkLines))
             if (chunk.count == 0) return true
-            val out = backend.tokenize(session, c, chunk.chars, chunk.offsets, chunk.count, maxOf(first, resume), false, true, 0) ?: return false
+            val out = timedTokenize(chunk.count) { backend.tokenize(session, c, chunk.chars, chunk.offsets, chunk.count, maxOf(first, resume), false, true, 0) } ?: return false
             frontier = backend.maxCheckpoint(session)
             store(out, maxOf(first, resume), c + chunk.count - 1, gen, cold = false)
             resume = c + chunk.count
@@ -395,7 +446,10 @@ class NativeHighlighter internal constructor(
         synchronized(cacheLock) {
             if (generation.get() != gen) return
             for ((i, t) in parsed.withIndex()) cache[emitFrom + i] = t
-            if (cold && parsed.isNotEmpty()) approx.add(intArrayOf(emitFrom, emitFrom + parsed.size - 1))
+            if (cold && parsed.isNotEmpty()) {
+                if (approx.size >= MAX_APPROX_RANGES) approx.removeAt(0)
+                approx.add(intArrayOf(emitFrom, emitFrom + parsed.size - 1))
+            }
             else if (parsed.isNotEmpty()) removeApprox(emitFrom, emitFrom + parsed.size - 1)
         }
     }
@@ -422,17 +476,19 @@ class NativeHighlighter internal constructor(
             frontier = from
         } finally { sessionLock.unlock() }
         if (from >= FRONTIER_CAP_LINES) { frontierDone = true; return false }
+        val tStart = System.nanoTime()
         val chunk = fetchForWorker(from, from + frontierChunk)
         if (chunk == null) { frontierDone = true; return false }
         if (chunk.count == 0) { frontierDone = true; return false }   // nothing (more) to read; re-armed by index progress / edits
         sessionLock.lock()
         try {
             if (closed.get() || session == 0L || generation.get() != gen) return true
-            if (backend.tokenize(session, from, chunk.chars, chunk.offsets, chunk.count, Int.MAX_VALUE, false, true, 0) == null) { frontierDone = true; return false }
+            if (timedTokenize(chunk.count) { backend.tokenize(session, from, chunk.chars, chunk.offsets, chunk.count, Int.MAX_VALUE, false, true, 0) } == null) { frontierDone = true; return false }
             frontier = backend.maxCheckpoint(session)
         } finally { sessionLock.unlock() }
+        frontierMs = (System.nanoTime() - tStart) / 1_000_000
         // no checkpoint inside this chunk (stride larger than the chunk): read more next time
-        frontierChunk = if (frontier <= from) minOf(frontierChunk * 2, 1 shl 16) else FRONTIER_CHUNK
+        frontierChunk = if (frontier <= from) minOf(frontierChunk * 2, 1 shl 16) else frontierChunkLines()
         refreshApprox()
         if (from + chunk.count >= chunk.docLines) { frontierDone = true; return false }
         return true
@@ -442,11 +498,12 @@ class NativeHighlighter internal constructor(
     private fun refreshApprox() {
         var target: IntArray? = null
         synchronized(cacheLock) {
-            for (r in approx) if (r[0] - frontier <= COLD_DISTANCE) { target = r; break }
+            val reach = coldDistance()
+        for (r in approx) if (r[0] - frontier <= reach) { target = r; break }
             target?.let { approx.remove(it) }
         }
         val t = target ?: return
-        post(t[0], t[1])
+        postRefine(t[0], t[1])
     }
 
     companion object {
@@ -456,9 +513,17 @@ class NativeHighlighter internal constructor(
         const val MARGIN = 40
         const val PREFETCH_MAX_DISTANCE = 300
         const val MAX_CACHE = 4000
-        const val COLD_DISTANCE = 20_000
+        const val COLD_DISTANCE = 20_000          // upper bound of the exact walk (fast grammars on fast devices)
+        const val MIN_COLD_DISTANCE = 200         // lower bound (slow grammars on slow devices)
+        const val COLD_BUDGET_MS = 120            // an exact walk to a block may cost at most about this much before an approximate start is used
         const val COLD_CONTEXT = 80
-        const val CHUNK_LINES = 600
+        const val CHUNK_LINES = 4096              // upper bound of a request chunk
+        const val MIN_CHUNK_LINES = 64
+        const val CHUNK_BUDGET_MS = 40            // target duration of one request chunk (the session lock is held that long)
+        const val FRONTIER_BUDGET_MS = 25
+        const val MAX_FRONTIER_CHUNK = 4096
+        const val INITIAL_LINES_PER_MS = 3.0      // until measured: a mid-range phone on a heavy grammar
+        const val MAX_APPROX_RANGES = 512
         const val MAX_CHUNK_CHARS = 4 shl 20
         const val MAX_CHECKPOINTS = 8192
         const val FRONTIER_CHUNK = 512

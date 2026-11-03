@@ -57,6 +57,22 @@ class QueueExecutor : Executor {
     fun runAll() { while (q.isNotEmpty()) q.removeFirst().run() }
 }
 
+/** Lets a test hold the worker inside the first exact request tokenization (not the frontier, not a cold start). */
+class GateBackend(private val inner: FakeBackend) : TokenizerBackend by inner {
+    @Volatile var armed = false
+    val entered = java.util.concurrent.CountDownLatch(1)
+    val release = java.util.concurrent.CountDownLatch(1)
+    override fun tokenize(session: Long, startLine: Int, chars: CharArray, offsets: IntArray, lineCount: Int,
+                          emitFrom: Int, cold: Boolean, record: Boolean, timeLimitMs: Int): IntArray? {
+        if (armed && !cold && record && emitFrom != Int.MAX_VALUE) {
+            armed = false
+            entered.countDown()
+            release.await(10, java.util.concurrent.TimeUnit.SECONDS)
+        }
+        return inner.tokenize(session, startLine, chars, offsets, lineCount, emitFrom, cold, record, timeLimitMs)
+    }
+}
+
 class NativeHighlighterTests {
     init { NativeHighlighter.errorSink = { it.printStackTrace() } }
     private val direct = Executor { it.run() }
@@ -155,6 +171,63 @@ class NativeHighlighterTests {
         h.close(); svc.close(); q.runAll()
     }
 
+    @Test fun aNewerViewportRequestStopsTheWalkOfTheOldOne() {
+        val fake = FakeBackend()
+        val be = GateBackend(fake)
+        val svc = HighlightService(assets(), direct, java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r).apply { isDaemon = true } }, be, { true })
+        val doc = EditDocument.fromString(text(3000))
+        val h = svc.createHighlighter(doc, "lang")!!
+        be.armed = true
+        h.requestRange(300, 330)                                   // exact walk from line 0 in several chunks; the worker stops inside the first one
+        assertTrue(be.entered.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        h.requestRange(2000, 2030)                                 // the user scrolled away meanwhile
+        be.release.countDown()
+        val deadline = System.currentTimeMillis() + 10_000
+        while (h.tokensFor(2000) == null && System.currentTimeMillis() < deadline) Thread.sleep(5)
+        assertNotNull("the block the user is looking at is coloured", h.tokensFor(2000))
+        assertEquals("the old walk stopped after its first chunk", 1, fake.calls.count { it.contains("emit=260,") })
+        assertNull("tokens of the abandoned block were never produced", h.tokensFor(300))
+        h.close(); svc.close()
+    }
+
+    @Test fun fastEngineWalksExactlyFromTheCheckpointInsteadOfStartingCold() {
+        val fake = FakeBackend()
+        val svc = service(fake)                                    // direct executors: every request runs inline
+        val doc = EditDocument.fromString(text(5000, 10, 4000))
+        val h = svc.createHighlighter(doc, "lang")!!
+        h.requestRange(0, 200)                                     // warm-up: lets the highlighter measure the engine speed
+        h.requestRange(3000, 3030)                                 // 3000 lines away, cheap enough for an exact walk
+        assertNotNull(h.tokensFor(3000))
+        assertEquals("exact: inside the comment opened at line 10", 1, fg(h.tokensFor(3000)))
+        assertTrue(fake.calls.none { it.contains("cold=true") })
+        h.close(); svc.close()
+    }
+
+    @Test fun slowEngineStartsColdSoTheVisibleBlockAppearsAtOnce() {
+        val fake = FakeBackend()
+        val svc = service(fake)
+        val doc = EditDocument.fromString(text(5000, 10, 4000))
+        val h = svc.createHighlighter(doc, "lang")!!
+        h.requestRange(3000, 3030)                                 // nothing measured yet (assumed mid-range phone): 3000 lines is too far
+        assertNotNull(h.tokensFor(3000))
+        assertTrue("the first tokenization of the block is a cold start", fake.calls.first { it.contains("emit=2960,") }.contains("cold=true"))
+        h.close(); svc.close()
+    }
+
+    @Test fun onlyTheMissingLinesAreRequested() {
+        val fake = FakeBackend()
+        val svc = service(fake)
+        val doc = EditDocument.fromString(text(500))
+        val h = svc.createHighlighter(doc, "lang")!!
+        h.requestRange(100, 160)                                   // lines 60..200 (margin 40)
+        val before = fake.calls.size
+        h.requestRange(110, 170)                                   // only 201..210 are new
+        val newCalls = fake.calls.drop(before)
+        assertTrue(newCalls.isNotEmpty())
+        assertTrue("no line that is already coloured is emitted again: $newCalls", newCalls.all { it.contains("emit=201,") })
+        h.close(); svc.close()
+    }
+
     @Test fun viewDocumentIsReadOnTheWorker() {
         val be = FakeBackend()
         val svc = HighlightService(assets(), direct, java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r).apply { isDaemon = true } }, be, { true })
@@ -167,6 +240,10 @@ class NativeHighlighterTests {
         h.requestRange(3000, 3030)
         val deadline = System.currentTimeMillis() + 10_000
         while (h.tokensFor(3000) == null && System.currentTimeMillis() < deadline) Thread.sleep(5)
+        assertNotNull(h.tokensFor(3000))
+        // 3000 lines from the first checkpoint is beyond the exact-walk budget: the first answer may be approximate and is
+        // replaced by the exact state (inside the comment) once the frontier has caught up
+        while ((h.isApproximate(3000) || fg(h.tokensFor(3000)) != 1) && System.currentTimeMillis() < deadline) Thread.sleep(5)
         assertEquals(1, fg(h.tokensFor(3000)))
         h.close(); svc.close(); doc.close()
     }
