@@ -46,6 +46,7 @@ class RowLayout(private val store: LineStore) {
     private fun compute(line: Int): IntArray {
         val len = store.lineLength(line)
         if (len == 0) return SINGLE
+        if (len > MAX_SCAN_CHARS) return fixedGrid(len)
         if (buf.size < len) buf = CharArray(maxOf(len, buf.size * 2))
         val n = store.copyLine(line, 0, len, buf, 0)
         var out = IntArray(4); var cnt = 1          // out[0] = 0
@@ -68,8 +69,22 @@ class RowLayout(private val store: LineStore) {
         return if (cnt == 1) SINGLE else out.copyOf(cnt)
     }
 
+    /**
+     * Very long lines (minified JS/JSON, one-line dumps): a plain grid of [wrapCells] chars per row, without reading the text, so that
+     * wrapping (on by default) can never exhaust memory or stall the UI. Tabs and wide characters may overshoot such a row.
+     * Beyond [MAX_GRID_ROWS] rows the line stays a single (horizontally clipped) row.
+     */
+    private fun fixedGrid(len: Int): IntArray {
+        val step = wrapCells.coerceAtLeast(1)
+        val rows = len / step + (if (len % step != 0) 1 else 0)
+        if (rows <= 1 || rows > MAX_GRID_ROWS) return SINGLE
+        return IntArray(rows) { it * step }
+    }
+
     companion object {
         private const val MAX_CACHE = 1024
+        const val MAX_SCAN_CHARS = 100_000
+        const val MAX_GRID_ROWS = 2_000_000
         @JvmField val SINGLE = intArrayOf(0)
 
         /** Row containing char index [col]: the last row whose start <= col. */

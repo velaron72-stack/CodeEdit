@@ -2,7 +2,12 @@ package app.codeedit.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -21,6 +26,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.SaveAs
 import androidx.compose.material.icons.filled.Search
@@ -39,7 +45,14 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,32 +65,60 @@ import app.codeedit.data.tr
 fun AppMenu(expanded: Boolean, onDismiss: () -> Unit, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     val c = LocalAppColors.current
     DropdownMenu(
-        expanded = expanded, onDismissRequest = onDismiss, modifier = modifier.widthIn(min = 230.dp),
-        containerColor = c.surface, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, c.border),
-        tonalElevation = 0.dp, shadowElevation = 10.dp, content = content,
+        expanded = expanded, onDismissRequest = onDismiss, modifier = modifier.widthIn(min = 220.dp),
+        containerColor = c.surface, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, c.border),
+        tonalElevation = 0.dp, shadowElevation = 8.dp, content = content,
     )
 }
 
+/**
+ * One row of a menu: icon, label, and on the right either a check box ([checked] != null), a "›" for a sub-menu ([chevron]),
+ * a check mark ([selected]) or a small grey [value].
+ */
 @Composable
 fun MenuItem(
     label: String, onClick: () -> Unit, icon: ImageVector? = null, selected: Boolean = false, checked: Boolean? = null,
-    value: String? = null, enabled: Boolean = true, accent: Boolean = false, danger: Boolean = false,
+    value: String? = null, enabled: Boolean = true, accent: Boolean = false, danger: Boolean = false, chevron: Boolean = false,
 ) {
     val c = LocalAppColors.current
-    val col = when { danger -> c.danger; selected || accent -> c.accent; else -> c.text }
+    val col = when { !enabled -> c.muted; danger -> c.danger; selected || accent -> c.accent; else -> c.text }
     DropdownMenuItem(
-        text = {
-            Text(label, color = col, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        },
+        text = { Text(label, color = col, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         onClick = onClick, enabled = enabled,
         modifier = if (selected) Modifier.padding(horizontal = 6.dp).background(c.accent.copy(alpha = 0.16f), RoundedCornerShape(10.dp)) else Modifier,
-        leadingIcon = if (icon != null) ({ Icon(icon, null, tint = if (enabled) col else c.muted, modifier = Modifier.size(19.dp)) }) else null,
+        leadingIcon = if (icon != null) ({ Icon(icon, null, tint = col, modifier = Modifier.size(22.dp)) }) else null,
         trailingIcon = when {
-            selected || checked == true -> ({ Icon(Icons.Default.Check, null, tint = c.accent, modifier = Modifier.size(18.dp)) })
+            checked != null -> ({ CheckMark(checked, enabled) })
+            selected -> ({ Icon(Icons.Default.Check, null, tint = c.accent, modifier = Modifier.size(18.dp)) })
+            chevron -> ({ Text("›", color = c.muted, fontSize = 22.sp) })
             value != null -> ({ Text(value, color = c.muted, fontSize = 12.sp, maxLines = 1) })
             else -> null
         },
     )
+}
+
+/** The check box of a toggle row: filled accent square with a tick when on, outlined square when off. */
+@Composable
+private fun CheckMark(checked: Boolean, enabled: Boolean) {
+    val c = LocalAppColors.current
+    val line = if (checked && enabled) c.accent else c.muted
+    val shape = RoundedCornerShape(4.dp)
+    Box(
+        Modifier.size(20.dp).clip(shape).background(if (checked && enabled) c.accent else Color.Transparent).border(1.5.dp, line, shape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checked) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(15.dp))
+    }
+}
+
+/** Title of a sub-menu page ("Файл"); tapping it goes back to the main page. */
+@Composable
+fun MenuHeader(title: String, onBack: () -> Unit) {
+    val c = LocalAppColors.current
+    Row(Modifier.fillMaxWidth().clickable(onClick = onBack).padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("‹", color = c.muted, fontSize = 20.sp, modifier = Modifier.padding(end = 10.dp))
+        Text(title, color = c.muted, fontSize = 14.sp, maxLines = 1)
+    }
 }
 
 @Composable
@@ -125,38 +166,62 @@ fun TabMenu(vm: EditorViewModel, tab: Tab, expanded: Boolean, onDismiss: () -> U
 
 // -------------------------------------------------------------------------------------------- main menu
 
+private const val PAGE_MAIN = 0
+private const val PAGE_FILE = 1
+private const val PAGE_VIEW = 2
+
+/**
+ * Short menu in the style of MT Manager: the everyday actions on the first page, file operations under "Файл", look-and-feel under
+ * "Вид" (both are pages of the same popup, the header goes back). Language / encoding / line endings / edit mode are also one tap
+ * away in the status bar.
+ */
 @Composable
 fun MainMenu(vm: EditorViewModel, actions: Actions, expanded: Boolean, onDismiss: () -> Unit) {
     val tab = vm.active
     val ready = tab != null && tab.state == TabState.READY && tab.session != null
     val editable = ready && tab!!.editable
-    val st = vm.settings
+    var page by remember(expanded) { mutableIntStateOf(PAGE_MAIN) }
     AppMenu(expanded, onDismiss) {
-        MenuItem(tr("Найти и заменить", "Find & replace"), { onDismiss(); vm.search.open(false) }, Icons.Default.Search, accent = true, enabled = ready)
-        MenuItem(tr("Перейти к строке", "Go to line"), { onDismiss(); vm.dialog = DialogState.Goto }, Icons.Default.FormatListNumbered, enabled = ready)
-        MenuDivider()
-        MenuItem(tr("Язык", "Language"), { onDismiss(); vm.dialog = DialogState.Language }, Icons.Default.Code, value = tab?.languageName, enabled = ready)
-        MenuItem(tr("Тема подсветки", "Syntax theme"), { onDismiss(); vm.dialog = DialogState.SyntaxTheme }, Icons.Default.Palette, value = vm.syntaxTheme?.name)
-        MenuItem(tr("Шрифт и размер", "Font & size"), { onDismiss(); vm.dialog = DialogState.Font }, Icons.Default.TextFields)
-        MenuItem(tr("Кодировка", "Encoding"), { onDismiss(); vm.dialog = DialogState.Encoding }, Icons.Default.Translate, value = tab?.encodingLabel, enabled = ready)
-        MenuItem(tr("Окончания строк", "Line endings"), { onDismiss(); vm.dialog = DialogState.Eol }, value = tab?.eolLabel, enabled = ready)
-        MenuDivider()
-        MenuItem(tr("Перенос строк", "Word wrap"), { onDismiss(); vm.toggleWrap() }, Icons.AutoMirrored.Filled.WrapText, checked = if (ready) vm.isWrapping() else st.bool(K.WRAP), enabled = ready)
-        MenuItem(tr("Нумерация строк", "Line numbers"), { onDismiss(); vm.setSetting(K.LINE_NUMBERS, !st.bool(K.LINE_NUMBERS)) }, Icons.Default.FormatListNumbered, checked = st.bool(K.LINE_NUMBERS))
-        MenuItem(
-            if (tab?.mode == DocMode.VIEW) tr("Включить редактирование", "Enable editing") else tr("Режим просмотра", "View mode"),
-            { onDismiss(); tab?.let { if (it.mode == DocMode.VIEW) vm.switchToEdit(it) else vm.switchToView(it) } },
-            if (tab?.mode == DocMode.VIEW) Icons.Default.Edit else Icons.Default.Visibility, enabled = ready,
-        )
-        MenuItem(tr("Развернуть все блоки", "Unfold all"), { onDismiss(); vm.editor?.unfoldAll() }, Icons.Default.UnfoldMore, enabled = ready)
-        MenuDivider()
-        MenuItem(tr("Сохранить", "Save"), { onDismiss(); vm.saveActive() }, Icons.Default.Save, enabled = editable)
-        MenuItem(tr("Сохранить как…", "Save as…"), { onDismiss(); tab?.let { vm.pendingSaveAs = SaveAsRequest(it, null) } }, Icons.Default.SaveAs, enabled = editable)
-        MenuItem(tr("Отменить", "Undo"), { onDismiss(); vm.editor?.undo() }, Icons.AutoMirrored.Filled.Undo, enabled = editable)
-        MenuItem(tr("Повторить", "Redo"), { onDismiss(); vm.editor?.redo() }, Icons.AutoMirrored.Filled.Redo, enabled = editable)
-        MenuDivider()
-        MenuItem(tr("Сведения о файле", "File info"), { onDismiss(); vm.dialog = DialogState.MenuInfo }, Icons.Default.Info, enabled = ready)
-        MenuItem(tr("Закрыть вкладку", "Close tab"), { onDismiss(); tab?.let { vm.requestClose(it) } }, Icons.Default.Close, enabled = tab != null)
-        MenuItem(tr("Настройки", "Settings"), { onDismiss(); vm.screen = Screen.Settings }, Icons.Default.Settings)
+        when (page) {
+            PAGE_FILE -> FilePage(vm, tab, ready, editable, onDismiss) { page = PAGE_MAIN }
+            PAGE_VIEW -> ViewPage(vm, tab, ready, onDismiss) { page = PAGE_MAIN }
+            else -> {
+                MenuItem(tr("Найти и заменить", "Find & replace"), { onDismiss(); vm.search.open(false) }, Icons.Default.Search, enabled = ready)
+                MenuItem(tr("Перейти к строке", "Go to line"), { onDismiss(); vm.dialog = DialogState.Goto }, Icons.Default.FormatListNumbered, enabled = ready)
+                MenuItem(tr("Отменить", "Undo"), { onDismiss(); vm.editor?.undo() }, Icons.AutoMirrored.Filled.Undo, enabled = editable)
+                MenuItem(tr("Повторить", "Redo"), { onDismiss(); vm.editor?.redo() }, Icons.AutoMirrored.Filled.Redo, enabled = editable)
+                MenuItem(tr("Перенос строк", "Word wrap"), { onDismiss(); vm.toggleWrap() }, Icons.AutoMirrored.Filled.WrapText,
+                    checked = if (ready) vm.isWrapping() else vm.settings.bool(K.WRAP), enabled = ready)
+                MenuItem(tr("Только чтение", "Read only"), { onDismiss(); tab?.let { if (it.mode == DocMode.VIEW) vm.switchToEdit(it) else vm.switchToView(it) } },
+                    Icons.Default.Visibility, checked = tab?.mode == DocMode.VIEW, enabled = ready)
+                MenuItem(tr("Файл", "File"), { page = PAGE_FILE }, Icons.Default.Description, chevron = true, enabled = tab != null)
+                MenuItem(tr("Вид", "View"), { page = PAGE_VIEW }, Icons.Default.TextFields, chevron = true)
+                MenuItem(tr("Настройки", "Settings"), { onDismiss(); vm.screen = Screen.Settings }, Icons.Default.Settings)
+                MenuItem(tr("Закрыть файл", "Close file"), { onDismiss(); tab?.let { vm.requestClose(it) } }, Icons.Default.Close, enabled = tab != null)
+            }
+        }
     }
+}
+
+@Composable
+private fun FilePage(vm: EditorViewModel, tab: Tab?, ready: Boolean, editable: Boolean, onDismiss: () -> Unit, back: () -> Unit) {
+    MenuHeader(tr("Файл", "File"), back)
+    MenuItem(tr("Сохранить", "Save"), { onDismiss(); vm.saveActive() }, Icons.Default.Save, enabled = editable)
+    MenuItem(tr("Сохранить как…", "Save as…"), { onDismiss(); tab?.let { vm.pendingSaveAs = SaveAsRequest(it, null) } }, Icons.Default.SaveAs, enabled = editable)
+    MenuItem(tr("Перезагрузить", "Reload"), { onDismiss(); if (tab != null) { if (tab.dirty) vm.dialog = DialogState.ExternalReload(tab) else vm.reloadFromDisk(tab) } },
+        Icons.Default.Refresh, enabled = ready && tab?.uri != null)
+    MenuItem(tr("Кодировка текста", "Text encoding"), { onDismiss(); vm.dialog = DialogState.Encoding }, Icons.Default.Translate, value = tab?.encodingLabel, enabled = ready)
+    MenuItem(tr("Код новой строки", "Line endings"), { onDismiss(); vm.dialog = DialogState.Eol }, Icons.Default.Code, value = tab?.eolLabel, enabled = ready)
+    MenuItem(tr("Сведения о файле", "File info"), { onDismiss(); vm.dialog = DialogState.MenuInfo }, Icons.Default.Info, enabled = ready)
+}
+
+@Composable
+private fun ViewPage(vm: EditorViewModel, tab: Tab?, ready: Boolean, onDismiss: () -> Unit, back: () -> Unit) {
+    val st = vm.settings
+    MenuHeader(tr("Вид", "View"), back)
+    MenuItem(tr("Язык подсветки", "Highlight language"), { onDismiss(); vm.dialog = DialogState.Language }, Icons.Default.Code, value = tab?.languageName, enabled = ready)
+    MenuItem(tr("Тема подсветки", "Syntax theme"), { onDismiss(); vm.dialog = DialogState.SyntaxTheme }, Icons.Default.Palette, value = vm.syntaxTheme?.name)
+    MenuItem(tr("Шрифт и размер", "Font & size"), { onDismiss(); vm.dialog = DialogState.Font }, Icons.Default.TextFields)
+    MenuItem(tr("Нумерация строк", "Line numbers"), { onDismiss(); vm.setSetting(K.LINE_NUMBERS, !st.bool(K.LINE_NUMBERS)) }, Icons.Default.FormatListNumbered, checked = st.bool(K.LINE_NUMBERS))
+    MenuItem(tr("Развернуть все блоки", "Unfold all"), { onDismiss(); vm.editor?.unfoldAll() }, Icons.Default.UnfoldMore, enabled = ready)
 }

@@ -114,7 +114,7 @@ object Schema {
         e(K.LN_BASE, Section.EDITOR, "1", "Нумерация с", "Numbering starts at", listOf(Opt("1", "1", "1"), Opt("0", "0", "0"))),
         i(K.LN_DIGITS, Section.EDITOR, 2, 1, 8, "Минимальная ширина номера (цифр)", "Minimum number width (digits)"),
         b(K.CUR_LINE, Section.EDITOR, true, "Подсвечивать текущую строку", "Highlight current line"),
-        b(K.WRAP, Section.EDITOR, false, "Перенос строк", "Word wrap"),
+        b(K.WRAP, Section.EDITOR, true, "Перенос строк", "Word wrap", "Строки подгоняются под ширину экрана; щипок меняет размер текста и перекладывает строки", "Lines fit the screen width; pinch changes the text size and re-flows them"),
         i(K.TAB_SIZE, Section.EDITOR, 4, 1, 16, "Размер табуляции", "Tab size"),
         b(K.INSERT_SPACES, Section.EDITOR, true, "Пробелы вместо табуляции", "Insert spaces for Tab"),
         b(K.AUTO_INDENT, Section.EDITOR, true, "Автоотступы", "Auto-indent"),

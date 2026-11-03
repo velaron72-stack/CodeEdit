@@ -20,7 +20,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = "1.0.1"
+        versionName = "1.0.2"
         externalNativeBuild {
             cmake {
                 // native ABIs are limited here (not via ndk.abiFilters, which AGP rejects together with splits.abi)

@@ -32,6 +32,29 @@ class ViewportTests {
         assertEquals(2, RowLayout.rowOfCol(l.rowStarts(0), 12))
     }
 
+    @Test fun veryLongLinesWrapOnAGridWithoutScanningTheText() {
+        val n = 1_000_000
+        val s = session("x".repeat(n) + "\nshort line")
+        val l = RowLayout(s.store); l.configure(50, 4)
+        val t0 = System.nanoTime()
+        val starts = l.rowStarts(0)
+        assertTrue("fast", (System.nanoTime() - t0) / 1_000_000 < 500)
+        assertEquals(n / 50, starts.size)
+        assertEquals(0, starts[0]); assertEquals(50, starts[1]); assertEquals(n - 50, starts.last())
+        assertEquals(0, RowLayout.rowOfCol(starts, 49)); assertEquals(1, RowLayout.rowOfCol(starts, 50)); assertEquals(starts.size - 1, RowLayout.rowOfCol(starts, n - 1))
+        assertEquals(1, l.rowCount(1))
+        // a line just under the scan limit still gets word-aware wrapping
+        val s2 = session(("ab ".repeat(RowLayout.MAX_SCAN_CHARS / 3 - 1)))
+        val l2 = RowLayout(s2.store); l2.configure(10, 4)
+        assertEquals(9, l2.rowStarts(0)[1] - l2.rowStarts(0)[0])   // breaks after the last space that fits: "ab ab ab " = 9 cells
+    }
+
+    @Test fun absurdLinesStaySingleRowInsteadOfAllocatingMillionsOfRows() {
+        val s = session("y".repeat(RowLayout.MAX_SCAN_CHARS + 1))
+        val l = RowLayout(s.store); l.configure(2, 4)             // 50 001 rows: still a grid
+        assertEquals(50_001, l.rowCount(0))
+    }
+
     @Test fun emptyAndShortLinesAreSingleRow() {
         val s = session("\nab")
         val l = RowLayout(s.store); l.configure(10, 4)

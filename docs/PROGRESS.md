@@ -4,15 +4,15 @@
 |---|---|---|---|---|---|
 | Native TextMate engine (C++) | yes | ASan/UBSan | host (g++/clang) | corpus 95/95, themes 1008/1008, smoke 238 | no |
 | Core (documents, IO, search, replace, edit actions, folds) | yes | — | JVM (Kotlin 2.0.21) | 76 JUnit tests | no |
-| Highlight layer (detector, content sniffer, extension memory, synchronous prefetch), settings schema, session/drafts, viewport math | yes | — | JVM | 57 JUnit tests, incl. real-engine ones | no |
+| Highlight layer (detector, content sniffer, extension memory, synchronous prefetch), settings schema, session/drafts, viewport math | yes | — | JVM | 59 JUnit tests, incl. real-engine ones | no |
 | Content sniffer on real files | yes | — | JVM | offline run on 3 443 files, see `HIGHLIGHT.md` (harness not shipped) | no |
 | `EditorView`, painter, touch, input connection, fonts, `files/UriFiles` | yes | — | **yes, against the real `android.jar` (API 30)**, outside Gradle | no | no |
 | `EditorViewModel`, `SearchController`, `Tab`, `CodeEditApp`, `SettingsRepo`, `RefreshRate` | yes | — | yes, but against small hand-written stubs of androidx (state, ViewModel, DataStore, DocumentFile), so API shapes of the real libraries are not verified | no | no |
-| Compose screens (`ui/{Theme,Components,EditorHost,EditorScreen,Menus,SearchPanel,Dialogs,SettingsScreen,FolderScreen,Root}`), `MainActivity`, manifest, resources | yes | re-read; imports and signatures cross-checked by grep | **no** (this round touched `EditorHost`, `Dialogs`, `Root`, `MainActivity`) | no | no |
+| Compose screens (`ui/{Theme,Components,EditorHost,EditorScreen,Menus,SearchPanel,Dialogs,SettingsScreen,FolderScreen,Root}`), `MainActivity`, manifest, resources | yes | re-read; imports and signatures cross-checked by grep | **no** (this round rewrote `Menus`) | no | no |
 | Gradle build, `.github/workflows/build.yml` | yes | YAML parsed; the signing step's shell code was extracted and run locally for 4 cases (Secrets, new key, cached key, incomplete Secrets) | **not run on GitHub since the signing rewrite** | — | — |
 
 Rows marked "no" under *Compiled* have only been read: the first full Gradle run may report compile errors there.
-133 JVM tests (listed in `app/src/test`) pass locally; none is skipped (the real-engine tests ran with the host build of the native library).
+135 JVM tests (listed in `app/src/test`) pass locally; none is skipped (the real-engine tests ran with the host build of the native library).
 
 ## What the user saw on his phone (previous build, 1080x2400 screenshots)
 1. a blank band where the tab bar should be;
@@ -34,6 +34,20 @@ Rows marked "no" under *Compiled* have only been read: the first full Gradle run
    on by default; the OS may ignore it), native engine warm-up at app start, first screenful tokenized before the first frame
    (no plain-text flash). **Not measured on a device**; host-only engine speed measured earlier: ~7-12 k lines/s.
 5. **Language** — `.plugin` -> Python, language from content when the name says nothing, "Remember for .ext" in the language dialog.
+
+## Changes for the wrap / menu report (version 1.0.2) — none of them has been verified on a device yet
+1. **Word wrap on by default** (`K.WRAP`, default `true`): lines fit the screen width like in MT Manager; pinch zoom changes the text
+   size and the rows are re-flowed (`EditorTouch.zoomBy` -> `applyMetrics(); updateWrap()` already did that; only the default changed).
+   Users who saved the setting earlier keep their value; the menu item "Перенос строк" toggles it per file.
+   Safety for default-on wrap: a line > 100 000 chars is wrapped on a plain grid without scanning/allocating text
+   (`RowLayout.fixedGrid`), > 2 000 000 rows collapses to one row. Both covered by JUnit tests (compiled + passing).
+2. **Simplified main menu** (`ui/Menus.kt`, Compose — **read only, not compiled**): compact popup with left icons and check boxes on the
+   right; top level has 10 rows instead of ~20 (Find & replace, Go to line, Undo, Redo, Word wrap ☑, Read only ☑, File ›, View ›,
+   Settings, Close file). "File" (save, save as, reload, encoding, line endings, info) and "View" (language, theme, font, line numbers ☑,
+   unfold all) are pages of the same popup; the header row goes back. Language/encoding/EOL are also one tap away in the status bar.
+   The file-tab menu (`TabMenu`) and the "+" menu are unchanged.
+3. **Not done yet:** "cut half of the unneeded tabs" — the user said he would list which ones; the request is ambiguous (menu entries /
+   settings sections / the tab strip), so nothing was cut beyond the menu above.
 
 ## Not done / known limits
 * No Smali / .gitignore grammar exists in the package (plain text).

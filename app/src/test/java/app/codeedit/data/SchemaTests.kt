@@ -43,6 +43,7 @@ class SchemaTests {
         assertEquals(1.0f, s.float(K.LINE_SPACING), 0f)
         assertEquals(2, s.int(K.LN_DIGITS))
         assertTrue(s.bool(K.HIGH_REFRESH))
+        assertTrue("word wrap is on by default: text fits the screen width", s.bool(K.WRAP))
         assertEquals("{}", s.str(K.LANG_ASSOC))
         assertTrue(Schema.byKey[K.LANG_ASSOC]!!.hidden)
         val d = Schema.byKey[K.LINE_SPACING]!!
