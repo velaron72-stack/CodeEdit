@@ -140,7 +140,7 @@ fun Root(vm: EditorViewModel, returnToCaller: () -> Unit) {
     key(settings.str(K.LANGUAGE)) {
         AppTheme(ec, settings) {
             val c = LocalAppColors.current
-            SystemBarsEffect(c.dark, c.bg, settings.bool(K.KEEP_ON))
+            SystemBarsEffect(c.dark, c.bg, settings.bool(K.KEEP_ON), settings.bool(K.HIGH_REFRESH))
             CompositionLocalProvider(LocalActions provides actions) {
                 Box(Modifier.fillMaxSize().background(c.bg)) {
                     if (vm.ready && themed) {
@@ -161,11 +161,12 @@ fun Root(vm: EditorViewModel, returnToCaller: () -> Unit) {
 }
 
 @Composable
-private fun SystemBarsEffect(dark: Boolean, bg: Color, keepOn: Boolean) {
+private fun SystemBarsEffect(dark: Boolean, bg: Color, keepOn: Boolean, highRefresh: Boolean) {
     val view = LocalView.current
     SideEffect {
         val w = (view.context as? Activity)?.window ?: return@SideEffect
         w.setBackgroundDrawable(ColorDrawable(bg.toArgb()))
+        RefreshRate.apply(w, highRefresh)
         val ctl = WindowCompat.getInsetsController(w, view)
         ctl.isAppearanceLightStatusBars = !dark
         ctl.isAppearanceLightNavigationBars = !dark

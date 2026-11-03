@@ -2,6 +2,7 @@ package app.codeedit.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.viewinterop.AndroidView
 import app.codeedit.data.K
 import app.codeedit.data.Settings
@@ -29,8 +30,9 @@ fun buildConfig(s: Settings): EditorConfig = EditorConfig(
 /** The one EditorView of the app, hosted in Compose. It is re-bound to whichever tab is active. */
 @Composable
 fun EditorHost(vm: EditorViewModel, tab: Tab, colors: EditorColors, modifier: Modifier = Modifier) {
+    // clipToBounds also gives the view its own graphics layer: a text redraw no longer re-records the whole Compose screen
     AndroidView(
-        modifier = modifier,
+        modifier = modifier.clipToBounds(),
         factory = { ctx ->
             EditorView(ctx).also { v ->
                 v.listener = vm.editorListener

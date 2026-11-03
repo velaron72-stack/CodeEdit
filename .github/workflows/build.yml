@@ -14,6 +14,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    env:
+      HAS_KEYSTORE_SECRET: ${{ secrets.KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,32 +50,91 @@ jobs:
       - name: Lint + JVM unit tests
         run: gradle --no-daemon :app:lintDebug :app:testDebugUnitTest 2>&1 | tee lint-test.log
 
-      - name: Decode release keystore (only if secrets exist)
+      # ---- signing key ------------------------------------------------------------------------------------------------------
+      # 1) GitHub Secrets (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD) are used when present: permanent key.
+      # 2) Otherwise a key is generated ONCE and kept in the Actions cache of this repository, so every later run signs with the
+      #    same key (APK updates install over the previous build). The cache is dropped after 7 days without a build; a new key is
+      #    then generated and the old app must be uninstalled once. For a permanent key use tools/make_keystore.sh + Secrets.
+      # Nothing secret is ever written into the repository or the uploaded artifacts.
+      - name: Restore auto-generated signing key (no secrets configured)
+        if: env.HAS_KEYSTORE_SECRET != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/restore@v4
+        with:
+          path: signing
+          key: codeedit-autokey-v1-${{ github.repository_id }}
+
+      - name: Prepare signing key
+        id: sign
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          S_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          S_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          S_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          set -e
+          mkdir -p signing
           if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
-            echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-            echo "release signing: ENABLED"
+            echo "$KEYSTORE_BASE64" | base64 -d > signing/release.jks
+            KS_PASS="$S_KEYSTORE_PASSWORD"; KEY_ALIAS_V="$S_KEY_ALIAS"; KEY_PASS="$S_KEY_PASSWORD"
+            if [ -z "$KS_PASS" ] || [ -z "$KEY_ALIAS_V" ] || [ -z "$KEY_PASS" ]; then
+              echo "::error::KEYSTORE_BASE64 is set but KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD are missing: add all four secrets (tools/make_keystore.sh writes them to signing/github-secrets.txt) or delete KEYSTORE_BASE64."
+              exit 1
+            fi
+            MODE="secrets"
+          elif [ -s signing/release.jks ] && [ -s signing/key.env ]; then
+            . signing/key.env
+            MODE="auto-cached"
           else
-            echo "release signing: no secrets -> release APK will be UNSIGNED (app-*-release-unsigned.apk)"
+            KS_PASS="$(openssl rand -hex 16)"; KEY_PASS="$KS_PASS"; KEY_ALIAS_V="codeedit"
+            keytool -genkeypair -keystore signing/release.jks -storetype PKCS12 -alias "$KEY_ALIAS_V" -keyalg RSA -keysize 2048 \
+              -validity 10950 -storepass "$KS_PASS" -keypass "$KEY_PASS" -dname "CN=Code Edit, O=Code Edit, C=UA"
+            printf 'KS_PASS=%s\nKEY_ALIAS_V=%s\nKEY_PASS=%s\n' "$KS_PASS" "$KEY_ALIAS_V" "$KEY_PASS" > signing/key.env
+            MODE="auto-new"
           fi
+          echo "::add-mask::$KS_PASS"; echo "::add-mask::$KEY_PASS"
+          {
+            echo "KEYSTORE_FILE=$GITHUB_WORKSPACE/signing/release.jks"
+            echo "KEYSTORE_PASSWORD=$KS_PASS"
+            echo "KEY_ALIAS=$KEY_ALIAS_V"
+            echo "KEY_PASSWORD=$KEY_PASS"
+          } >> "$GITHUB_ENV"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "release signing: $MODE"
+          {
+            echo "### Signing: \`$MODE\`"
+            case "$MODE" in
+              secrets) echo "APKs are signed with the key from GitHub Secrets." ;;
+              auto-cached) echo "APKs are signed with the auto-generated key kept in the Actions cache (same signature as the previous build)." ;;
+              auto-new) echo "**A NEW signing key was generated.** If an older build of this app is installed, uninstall it once; later builds reuse this key (cache, 7 days idle limit). For a permanent key see docs/SIGNING.md." ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save auto-generated signing key
+        if: steps.sign.outputs.mode == 'auto-new' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v4
+        with:
+          path: signing
+          key: codeedit-autokey-v1-${{ github.repository_id }}
 
       - name: Build debug + release APKs
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle --no-daemon :app:assembleDebug :app:assembleRelease 2>&1 | tee assemble.log
+
+      - name: Verify APK signatures
+        run: |
+          AS="$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)"
+          for f in app/build/outputs/apk/*/*.apk; do
+            echo "== $f"
+            "$AS" verify --print-certs "$f" 2>&1 | grep -E "Verifies|DOES NOT VERIFY|ERROR|Signer #1 certificate (DN|SHA-256)" || true
+          done 2>&1 | tee sign-verify.log
+          if grep -q "DOES NOT VERIFY" sign-verify.log; then echo "unsigned or broken APK found"; exit 1; fi
 
       - name: Collect build log summary
         if: always()
         run: |
           mkdir -p ci-out
           { echo "sha=${GITHUB_SHA}"; echo "run=${GITHUB_RUN_NUMBER}"; echo "job_status=${{ job.status }}"; echo "-----"; \
-            for f in native-tests.log lint-test.log assemble.log; do [ -f $f ] && { echo "=== $f (errors) ==="; grep -n -E "error:|^e: |FAILED|FAILURE|What went wrong|Execution failed|AssertionError|undefined reference|fatal error|CMake Error|\* Where|Caused by" $f | head -150; echo "=== $f (tail) ==="; tail -60 $f; }; done; } > ci-out/summary.txt
-          cp native-tests.log lint-test.log assemble.log ci-out/ 2>/dev/null || true
+            for f in native-tests.log lint-test.log assemble.log sign-verify.log; do [ -f $f ] && { echo "=== $f (errors) ==="; grep -n -E "error:|^e: |FAILED|FAILURE|What went wrong|Execution failed|AssertionError|undefined reference|fatal error|CMake Error|\* Where|Caused by" $f | head -150; echo "=== $f (tail) ==="; tail -60 $f; }; done; } > ci-out/summary.txt
+          cp native-tests.log lint-test.log assemble.log sign-verify.log ci-out/ 2>/dev/null || true
 
       - name: Upload APKs
         if: success()

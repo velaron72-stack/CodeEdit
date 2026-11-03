@@ -39,6 +39,8 @@ class CodeEditApp : Application() {
                 uiExecutor = { r -> main.post(r) },
             )
         } catch (t: Throwable) { highlightError = t.message ?: t.javaClass.simpleName }
+        // load libcodeedit_native and build the grammar registry off the UI thread (the first highlighted file would otherwise pay for it)
+        highlight?.let { hs -> ioPool.execute { try { hs.engineAvailable } catch (_: Throwable) {} } }
     }
 
     companion object { fun of(ctx: android.content.Context): CodeEditApp = ctx.applicationContext as CodeEditApp }

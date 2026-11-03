@@ -84,6 +84,27 @@ class NativeHighlighter internal constructor(
         post(f, l)
     }
 
+    /**
+     * UI thread: tokenizes the first screenful immediately (bounded: only when an exact checkpoint is within [PREFETCH_MAX_DISTANCE]
+     * lines), so the first frame is already coloured instead of flashing plain text. Everything else stays asynchronous.
+     */
+    override fun prefetch(firstLine: Int, lastLine: Int) {
+        if (closed.get() || sessionFailed) return
+        val lc = store.lineCount
+        if (lc <= 0) return
+        val f = firstLine.coerceIn(0, lc - 1)
+        val l = lastLine.coerceIn(f, lc - 1)
+        lastFirst = (f - MARGIN).coerceAtLeast(0); lastLast = (l + MARGIN).coerceAtMost(lc - 1)
+        if (!sessionLock.tryLock()) return
+        try {
+            if (!ensureSession()) return
+            applyPendingInvalidation()
+            if (f - backend.nearestCheckpoint(session, f) > PREFETCH_MAX_DISTANCE) return
+            runBlock(f, l, ::fetchDirect, generation.get(), notify = false)
+        } catch (_: Throwable) {
+        } finally { sessionLock.unlock() }
+    }
+
     override fun onContentChanged(startLine: Int, oldLineCount: Int, newLineCount: Int) = onDocumentChanged(startLine, oldLineCount, newLineCount)
 
     override fun onIndexProgress(lineCount: Int, complete: Boolean) {
@@ -433,6 +454,7 @@ class NativeHighlighter internal constructor(
         @Volatile @JvmStatic var errorSink: ((Throwable) -> Unit)? = null
 
         const val MARGIN = 40
+        const val PREFETCH_MAX_DISTANCE = 300
         const val MAX_CACHE = 4000
         const val COLD_DISTANCE = 20_000
         const val COLD_CONTEXT = 80

@@ -20,7 +20,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = "1.0.0"
+        versionName = "1.0.1"
         externalNativeBuild {
             cmake {
                 // native ABIs are limited here (not via ndk.abiFilters, which AGP rejects together with splits.abi)
@@ -72,6 +72,8 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            // the same key as release when CI provides one: a fresh debug key on every CI run would block installing updates over the old build
+            if (hasSigning) signingConfig = signingConfigs.getByName("release")
         }
     }
 

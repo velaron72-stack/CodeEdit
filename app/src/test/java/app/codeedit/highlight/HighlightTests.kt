@@ -201,6 +201,55 @@ class NativeHighlighterTests {
         assertFalse(svc.engineAvailable)
         svc.close()
     }
+
+    @Test fun prefetchTokenizesTheFirstScreenOnTheCallingThreadWithoutTheWorker() {
+        val be = FakeBackend()
+        val q = QueueExecutor()                                   // the worker never runs in this test
+        val svc = service(be, worker = q)
+        val doc = EditDocument.fromString(text(300, 10, 20))
+        val h = svc.createHighlighter(doc, "lang")!!
+        var notified = 0
+        h.listener = HighlightListener { _, _ -> notified++ }
+        assertNull(h.tokensFor(5))
+        h.prefetch(0, 60)
+        assertTrue("nothing is queued for the worker", q.q.isEmpty())
+        assertNotNull(h.tokensFor(0)); assertNotNull(h.tokensFor(60))
+        assertEquals(1, fg(h.tokensFor(15)))                      // inside the comment
+        assertEquals(0, fg(h.tokensFor(25)))
+        assertEquals("the caller draws right afterwards, so no extra invalidation", 0, notified)
+        h.close(); svc.close()
+    }
+
+    @Test fun prefetchOnlyWorksCloseToAnExactCheckpoint() {
+        val be = FakeBackend()
+        val q = QueueExecutor()
+        val svc = service(be, worker = q)
+        val doc = EditDocument.fromString(text(5000))
+        val h = svc.createHighlighter(doc, "lang")!!
+        h.prefetch(2000, 2060)                                    // 2000 lines from the only checkpoint: left to the worker
+        assertNull(h.tokensFor(2000))
+        assertTrue(be.calls.isEmpty())
+        h.prefetch(250, 300)                                      // within PREFETCH_MAX_DISTANCE of line 0
+        assertNotNull(h.tokensFor(250)); assertNotNull(h.tokensFor(300))
+        assertNull(h.tokensFor(100))
+        assertTrue(be.calls.size == 1 && be.calls[0].contains("cold=false"))
+        h.close(); svc.close()
+    }
+
+    @Test fun prefetchIsHarmlessOnEmptyClosedAndOutOfRangeInput() {
+        val be = FakeBackend()
+        val svc = service(be, worker = QueueExecutor())
+        val empty = svc.createHighlighter(EditDocument.fromString(""), "lang")!!
+        empty.prefetch(0, 10); empty.prefetch(-5, -1)
+        val doc = EditDocument.fromString(text(20))
+        val h = svc.createHighlighter(doc, "lang")!!
+        h.prefetch(500, 600)                                      // beyond the end: clamped, no exception
+        h.prefetch(10, 5)                                         // inverted range: clamped
+        h.close()
+        h.prefetch(0, 10)                                         // after close
+        assertNull(h.tokensFor(0))
+        empty.close(); svc.close()
+    }
 }
 
 class ThemeColorsTests {
@@ -308,6 +357,60 @@ class BundledAssetsTests {
         h.requestRange(0, 5)
         val d2 = System.currentTimeMillis() + 15_000
         while (colorAt(5, 5) != 0xFFB5CEA8.toInt() && colorAt(5, 5) != 0xFFCE9178.toInt() && System.currentTimeMillis() < d2) Thread.sleep(5)
+        h.close(); svc.close()
+    }
+
+    @Test fun extraExtensionsMapToBundledLanguagesAndManifestStillWins() {
+        val r = reader(); assumeNotNull(r)
+        val svc = HighlightService(r!!, Executor { it.run() }, null, FakeBackend(), { false })
+        fun id(f: String?, first: String? = null) = svc.detectLanguage(f, first)?.id
+        assertEquals("python", id("my_plugin.plugin"))
+        assertEquals("python", id("MY.PLUGIN"))
+        assertEquals("json", id("pack.mcmeta"))
+        assertEquals("json", id("a.json"))
+        assertEquals("python", id("a.py"))
+        assertNull(id("a.plugin.bak"))
+        // every language the content sniffer can answer with is bundled and has a grammar
+        for (lid in listOf("python", "javascript", "typescript", "shellscript", "java", "kotlin", "csharp", "lua", "css", "sql", "c", "cpp", "json", "xml", "html"))
+            assertNotNull("sniffer id $lid", svc.languageById(lid)?.scope)
+        svc.close()
+    }
+
+    @Test fun contentGuessPicksABundledGrammarButNeverForPlainTextExtensions() {
+        val r = reader(); assumeNotNull(r)
+        val svc = HighlightService(r!!, Executor { it.run() }, null, FakeBackend(), { false })
+        val py = listOf("import os", "import sys", "", "def main():", "    print(os.getcwd())", "", "class A:", "    pass")
+        assertEquals("python", svc.guessLanguage("noextension", py)?.id)
+        assertEquals("python", svc.guessLanguage("document:42", py)?.id)
+        assertEquals("python", svc.guessLanguage(null, py)?.id)
+        assertNull(svc.guessLanguage("notes.txt", py))
+        assertNull(svc.guessLanguage("data.CSV", py))
+        assertNull(svc.guessLanguage("x.bin", py))
+        assertNull(svc.guessLanguage("x", listOf("just some words", "and some more words")))
+        svc.close()
+    }
+
+    @Test fun prefetchColoursTheFirstFrameWithTheRealEngine() {
+        val r = reader(); assumeNotNull(r)
+        val lib = System.getProperty("codeedit.native.lib"); assumeNotNull(lib)
+        val worker = QueueExecutor()                              // never runs: only prefetch can have produced these tokens
+        val svc = HighlightService(r!!, Executor { it.run() }, worker)
+        assertTrue("engine must load: ${TmNative.loadFailure}", svc.engineAvailable)
+        svc.setTheme("dark-plus")
+        val doc = EditDocument.fromString("# comment\ndef f(x):\n    return 'str' + x\n")
+        val h = svc.createHighlighter(doc, "python")!!
+        h.prefetch(0, 3)
+        val map = h.colorMap
+        fun colorAt(line: Int, col: Int): Int {
+            val t = h.tokensFor(line)!!
+            var k = 0
+            for (i in 0 until t.count) if (t.starts[i] <= col) k = i
+            return map[TokenMeta.foreground(t.meta[k])]
+        }
+        assertEquals("comment", 0xFF6A9955.toInt(), colorAt(0, 2))
+        assertEquals("def keyword", 0xFF569CD6.toInt(), colorAt(1, 0))
+        assertEquals("string", 0xFFCE9178.toInt(), colorAt(2, 12))
+        assertTrue(worker.q.isEmpty())
         h.close(); svc.close()
     }
 }

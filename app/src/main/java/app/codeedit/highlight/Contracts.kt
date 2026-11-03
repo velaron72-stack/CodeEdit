@@ -31,6 +31,8 @@ interface SyntaxHighlighter : Closeable {
     fun tokensFor(line: Int): LineTokens?
     /** Ask for background tokenization of lines [firstLine, lastLine] (visible range + margin). Non-blocking. */
     fun requestRange(firstLine: Int, lastLine: Int)
+    /** Tokenizes [firstLine, lastLine] right now on the calling (UI) thread when that is cheap (a checkpoint is close), so the very first frame is already coloured. Optional. */
+    fun prefetch(firstLine: Int, lastLine: Int) {}
     /** Registered automatically as a DocumentListener by HighlightService.createHighlighter (callers need not call it). UI thread. Invalidates caches/checkpoints and synchronously re-tokenizes the edited lines. */
     fun onDocumentChanged(startLine: Int, oldLineCount: Int, newLineCount: Int)
     fun invalidateAll()

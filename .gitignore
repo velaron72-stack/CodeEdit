@@ -12,3 +12,9 @@ captures/
 *.log
 ci-out/
 logs-in/
+
+# signing material: never commit
+signing/
+*.p12
+*.pfx
+key.env

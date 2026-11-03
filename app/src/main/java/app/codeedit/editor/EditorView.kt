@@ -203,7 +203,7 @@ class EditorView @JvmOverloads constructor(context: Context, attrs: AttributeSet
         charW = paint.measureText("0").coerceAtLeast(1f)
         val fm = paint.fontMetrics
         val fh = fm.descent - fm.ascent
-        lineH = Math.ceil((fh * config.lineSpacing.coerceIn(1.0f, 3f)).toDouble()).toFloat().coerceAtLeast(4f)
+        lineH = Math.ceil((fh * config.lineSpacing.coerceIn(0.8f, 3f)).toDouble()).toFloat().coerceAtLeast(4f)
         textBaseline = (lineH - fh) / 2f - fm.ascent
         lnPaint.typeface = font?.regular ?: android.graphics.Typeface.MONOSPACE
         lnPaint.textSize = px * 0.86f
@@ -216,12 +216,14 @@ class EditorView @JvmOverloads constructor(context: Context, attrs: AttributeSet
         val store = session?.store
         val total = if (store == null) 1L else maxOf(store.lineCount.toLong(), store.estimatedLineCount)
         val maxNum = total + config.lineNumberBase
-        lnDigits = maxOf(config.lineNumberMinDigits, maxNum.toString().length)
-        foldColW = if (config.folding) dp(16f) else 0f
+        lnDigits = maxOf(config.lineNumberMinDigits, digitsOf(maxNum))
+        foldColW = if (config.folding) dp(12f) else 0f
         gutterW = if (!config.showLineNumbers && !config.folding) dp(4f)
-        else dp(6f) + (if (config.showLineNumbers) lnDigits * lnCharW + dp(8f) else 0f) + foldColW + dp(2f)
-        textLeft = gutterW + dp(6f)
+        else dp(4f) + (if (config.showLineNumbers) lnDigits * lnCharW + dp(6f) else 0f) + foldColW
+        textLeft = gutterW + dp(4f)
     }
+
+    private fun digitsOf(n: Long): Int { var d = 1; var x = n; while (x >= 10) { x /= 10; d++ }; return d }
 
     /** Keeps the gutter width in step with a growing document. Returns true if it changed. */
     internal fun checkGutter(): Boolean {
@@ -247,6 +249,7 @@ class EditorView @JvmOverloads constructor(context: Context, attrs: AttributeSet
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        clipBounds = Rect(0, 0, w, h)
         updateWrap()
         if (oldh in 1 until h || (oldh > h && hasFocus())) ensureCaretVisible()
     }
@@ -273,8 +276,12 @@ class EditorView @JvmOverloads constructor(context: Context, attrs: AttributeSet
     }
 
     override fun onDraw(canvas: Canvas) {
-        if (!ensureBound()) { canvas.drawColor(colors.background); return }
-        painter.draw(canvas)
+        // Compose hosts this view inside its own canvas: without this clip the background fill below also covers everything Compose
+        // drew BEFORE the view (the top tab bar vanished) and forces a full-window repaint on every frame.
+        canvas.save()
+        canvas.clipRect(0f, 0f, width.toFloat(), height.toFloat())
+        if (!ensureBound()) canvas.drawColor(colors.background) else painter.draw(canvas)
+        canvas.restore()
     }
 
     internal fun requestHighlight(first: Int, last: Int, anyMissing: Boolean) {

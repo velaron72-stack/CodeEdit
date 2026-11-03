@@ -60,7 +60,7 @@ class HighlightService(
         allLanguages = listOf(plainText) + langs
         languages = listOf(plainText) + langs.filter { !it.hidden }.sortedBy { it.name.lowercase() }
         for (l in allLanguages) byId.putIfAbsent(l.id, l)
-        detector = LanguageDetector(langs.filter { !it.hidden } + langs.filter { it.hidden })
+        detector = LanguageDetector(langs.filter { !it.hidden } + langs.filter { it.hidden }, EXTRA_EXTENSIONS)
         val th = ArrayList<ThemeEntry>()
         for (o in MiniJson.asArray(manifest["themes"]) ?: emptyList()) {
             val m = MiniJson.asObject(o) ?: continue
@@ -114,6 +114,17 @@ class HighlightService(
     }
 
     fun detectLanguage(fileName: String?, firstLine: String?): LanguageInfo? = detector.detect(fileName, firstLine)
+
+    /**
+     * Last resort when the name and first line say nothing: picks a bundled grammar from the first lines of the text
+     * ([ContentSniffer]); the colouring itself is still the TextMate engine. Plain-text extensions are never sniffed.
+     */
+    fun guessLanguage(fileName: String?, firstLines: List<String>): LanguageInfo? {
+        val key = LanguageAssoc.keyOf(fileName)
+        if (key != null && key in NEVER_SNIFF) return null
+        val id = ContentSniffer.guess(firstLines) ?: return null
+        return byId[id]?.takeIf { it.scope != null }
+    }
 
     /** Selects a bundled theme (any thread). Unknown id: unchanged. Every live highlighter is invalidated. */
     fun setTheme(themeId: String): ThemeInfo {
@@ -172,6 +183,12 @@ class HighlightService(
         val bytes = entry?.let { assets.read("themes/${it.file}") } ?: ByteArray(0)
         val parsed = ThemeColors.parse(if (bytes.isEmpty()) "{}".toByteArray() else bytes, if (entry?.isDark == false) "light" else "dark")
         return Triple(ThemeInfo(entry?.id ?: "default", entry?.name ?: "Default", parsed.colors.isDark, parsed.colors), parsed, bytes)
+    }
+
+    companion object {
+        /** Extensions absent from the grammar package that hold a bundled language (e.g. exteraGram plugins are Python). */
+        val EXTRA_EXTENSIONS: Map<String, String> = mapOf(".plugin" to "python", ".mcmeta" to "json")
+        private val NEVER_SNIFF = setOf(".txt", ".text", ".csv", ".tsv", ".dat", ".bin", ".rtf")
     }
 
     override fun close() {

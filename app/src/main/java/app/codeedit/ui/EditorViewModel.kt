@@ -43,6 +43,8 @@ import app.codeedit.editor.EditorListener
 import app.codeedit.editor.EditorView
 import app.codeedit.files.UriFiles
 import app.codeedit.files.UriInfo
+import app.codeedit.highlight.ContentSniffer
+import app.codeedit.highlight.LanguageAssoc
 import app.codeedit.highlight.PLAIN_TEXT_ID
 import app.codeedit.highlight.ThemeInfo
 import kotlinx.coroutines.CompletableDeferred
@@ -56,6 +58,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 private const val MB = 1024L * 1024L
+private const val PREFETCH_LINES = 90   // a bit more than one phone screen
 
 class EditorViewModel(application: Application) : AndroidViewModel(application) {
     val app: CodeEditApp = application as CodeEditApp
@@ -344,18 +347,31 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // ------------------------------------------------------------------ language / highlight
-    private fun resolveLanguage(tab: Tab) {
+    /** Order: the tab's own choice, the remembered choice for its extension, name/extension/first line, then a content guess. */
+    private fun resolveLanguage(tab: Tab, assocJson: String = settings.str(K.LANG_ASSOC)) {
         val s = tab.session ?: return
         val hs = highlight
         val manual = tab.manualLanguage
         val lang = when {
             hs == null -> null
             manual != null -> hs.languageById(manual)
-            else -> hs.detectLanguage(tab.name, try { s.store.getLine(0).take(300) } catch (_: Throwable) { null })
+            else -> {
+                val remembered = LanguageAssoc.keyOf(tab.name)?.let { LanguageAssoc.get(assocJson, it) }?.let { hs.languageById(it) }
+                remembered
+                    ?: hs.detectLanguage(tab.name, try { s.store.getLine(0).take(300) } catch (_: Throwable) { null })
+                    ?: hs.guessLanguage(tab.name, firstLinesOf(s.store))
+            }
         }
         tab.languageId = if (manual == PLAIN_TEXT_ID) PLAIN_TEXT_ID else lang?.id ?: PLAIN_TEXT_ID
         tab.languageName = if (tab.languageId == PLAIN_TEXT_ID) "Plain Text" else lang?.name ?: "Plain Text"
         s.languageId = tab.languageId
+    }
+
+    private fun firstLinesOf(store: app.codeedit.core.doc.LineStore): List<String> {
+        val n = minOf(store.lineCount, ContentSniffer.MAX_LINES)
+        val out = ArrayList<String>(n)
+        for (i in 0 until n) out += try { store.getLine(i) } catch (_: Throwable) { break }
+        return out
     }
 
     fun attachHighlighter(tab: Tab) {
@@ -369,12 +385,29 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val h = hs.createHighlighter(s.store, tab.languageId)
         if (h == null) tab.highlightNote = if (hs.engineAvailable) tr("Для языка нет грамматики", "No grammar for this language") else tr("Нативный движок не загружен", "Native engine not loaded")
         s.highlighter = h
+        // colour the first screen before it is ever drawn (no plain-text flash)
+        h?.prefetch(s.topLine, s.topLine + PREFETCH_LINES)
         editor?.invalidate()
     }
 
-    fun setLanguage(tab: Tab, languageId: String?) {
-        tab.manualLanguage = languageId
-        resolveLanguage(tab); attachHighlighter(tab); persistSoon()
+    /**
+     * [languageId] null = auto-detect. With [rememberKey] (an extension such as ".plugin") the choice is stored for every file with
+     * that extension instead of for this tab only.
+     */
+    fun setLanguage(tab: Tab, languageId: String?, rememberKey: String? = null) {
+        if (rememberKey == null) {
+            tab.manualLanguage = languageId
+            resolveLanguage(tab); attachHighlighter(tab); persistSoon()
+            return
+        }
+        val json = LanguageAssoc.put(settings.str(K.LANG_ASSOC), rememberKey, languageId)
+        setSetting(K.LANG_ASSOC, json)
+        for (t in tabs) {
+            if (t.session == null) continue
+            if (t === tab) t.manualLanguage = null
+            if (t.manualLanguage == null && LanguageAssoc.keyOf(t.name) == rememberKey) { resolveLanguage(t, json); attachHighlighter(t) }
+        }
+        persistSoon()
     }
 
     // ------------------------------------------------------------------ opening

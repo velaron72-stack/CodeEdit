@@ -37,6 +37,7 @@ import app.codeedit.core.doc.TextEncoding
 import app.codeedit.data.K
 import app.codeedit.data.Schema
 import app.codeedit.data.tr
+import app.codeedit.highlight.LanguageAssoc
 import app.codeedit.highlight.PLAIN_TEXT_ID
 
 @Composable
@@ -170,10 +171,18 @@ private fun LanguageDialog(vm: EditorViewModel, dismiss: () -> Unit) {
             for (l in langs) add(PickItem(l.id, l.name, l.extensions.take(5).joinToString(" "), null, tr("Языки", "Languages"), l.name + " " + l.id + " " + l.extensions.joinToString(" ") + " " + l.aliases.joinToString(" ")))
         }
     }
+    // "remember for .ext": applies the choice to every file with this extension (stored in the settings)
+    val extKey = remember(tab.name) { LanguageAssoc.keyOf(tab.name) }
+    var rememberExt by remember { mutableStateOf(true) }
     PickerDialog(
         tr("Язык подсветки", "Highlight language"), items, tab.manualLanguage ?: AUTO,
-        { vm.setLanguage(tab, if (it.id == AUTO) null else it.id); dismiss() }, dismiss,
+        { vm.setLanguage(tab, if (it.id == AUTO) null else it.id, if (rememberExt) extKey else null); dismiss() }, dismiss,
         footer = {
+            if (extKey != null) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
+                    KeyChip(tr("Запомнить для $extKey", "Remember for $extKey"), { rememberExt = !rememberExt }, selected = rememberExt, mono = false)
+                }
+            }
             val pi = hs?.packageInfo
             Text(
                 if (pi != null) "${pi.grammarName} ${pi.grammarVersion} · ${pi.languageCount} " + tr("языков", "languages") else tr("Пакет грамматик недоступен", "Grammar package unavailable"),

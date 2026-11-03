@@ -22,6 +22,7 @@ internal class EditorPainter(private val v: EditorView) {
 
     private var visLine = IntArray(128)
     private var visTop = FloatArray(128)
+    private var visToks = arrayOfNulls<LineTokens>(128)
     private var visCount = 0
 
     // run state of drawText
@@ -50,19 +51,23 @@ internal class EditorPainter(private val v: EditorView) {
         var ln = s.topLine
         var y = -s.topOffsetPx
         val last = store.lineCount - 1
+        var missing = false
         while (y < h && ln <= last) {
-            if (visCount == visLine.size) { visLine = visLine.copyOf(visCount * 2); visTop = visTop.copyOf(visCount * 2) }
-            visLine[visCount] = ln; visTop[visCount] = y; visCount++
+            if (visCount == visLine.size) {
+                visLine = visLine.copyOf(visCount * 2); visTop = visTop.copyOf(visCount * 2); visToks = visToks.copyOf(visCount * 2)
+            }
+            visLine[visCount] = ln; visTop[visCount] = y
+            // one token lookup (one lock acquisition) per visible line and frame
+            val t = hl?.tokensFor(ln)
+            visToks[visCount] = t
+            if (hl != null && t == null) missing = true
+            visCount++
             y += v.layout.rowCount(ln) * lineH
             ln = s.folds.nextVisible(ln)
         }
 
-        // ---- highlight request + missing tokens check
-        var missing = false
-        if (hl != null && visCount > 0) {
-            for (i in 0 until visCount) if (hl.tokensFor(visLine[i]) == null) { missing = true; break }
-            v.requestHighlight(visLine[0], visLine[visCount - 1], missing)
-        }
+        // ---- highlight request (visible range; the worker fills in whatever is missing)
+        if (hl != null && visCount > 0) v.requestHighlight(visLine[0], visLine[visCount - 1], missing)
 
         // ---- text area
         c.save()
@@ -73,7 +78,7 @@ internal class EditorPainter(private val v: EditorView) {
             val top = visTop[i]
             val len = buf.fill(store, l)
             val rows = v.layout.rowStarts(l)
-            val toks = hl?.tokensFor(l)
+            val toks = visToks[i]
             val matches = v.matchHighlighter?.matchesInLine(l)
             val isCaretLine = l == caret.line
             for (r in rows.indices) {
@@ -366,7 +371,7 @@ internal class EditorPainter(private val v: EditorView) {
         if (!showNums && !folding) return
         val caretLine = s.selection.head.line
         val base = v.config.lineNumberBase
-        val numRight = v.dp(6f) + v.lnDigits * v.lnCharW
+        val numRight = v.dp(4f) + v.lnDigits * v.lnCharW
         v.lnPaint.textAlign = Paint.Align.LEFT
         val store = s.store
         val tab = v.config.tabSize

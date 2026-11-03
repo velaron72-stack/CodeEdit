@@ -1,7 +1,7 @@
 package app.codeedit.highlight
 
 /** Picks a language for a file name / first line using the manifest (exact filenames, longest extension, first-line patterns). */
-internal class LanguageDetector(languages: List<LanguageInfo>) {
+internal class LanguageDetector(languages: List<LanguageInfo>, extraExtensions: Map<String, String> = emptyMap()) {
     private val byFilename = HashMap<String, LanguageInfo>()
     private val byFilenameLower = HashMap<String, LanguageInfo>()
     private val byExtension = HashMap<String, LanguageInfo>()   // lower-case, with the leading dot
@@ -17,6 +17,13 @@ internal class LanguageDetector(languages: List<LanguageInfo>) {
                 val k = e.lowercase()
                 if (byExtension.putIfAbsent(k, l) == null && k.length > maxExtLen) maxExtLen = k.length
             }
+        }
+        // extensions the grammar package does not list but that are known to hold one of its languages (manifest entries win)
+        val byId = ordered.associateBy { it.id }
+        for ((ext, id) in extraExtensions) {
+            val l = byId[id] ?: continue
+            val k = ext.lowercase()
+            if (byExtension.putIfAbsent(k, l) == null && k.length > maxExtLen) maxExtLen = k.length
         }
         val fl = ArrayList<Pair<Regex, LanguageInfo>>()
         for (l in ordered) {

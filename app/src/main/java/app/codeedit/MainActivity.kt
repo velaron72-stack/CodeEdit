@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         vm.onResume()
+        app.codeedit.ui.RefreshRate.apply(window, vm.settings.bool(K.HIGH_REFRESH))
     }
 
     override fun onStop() {

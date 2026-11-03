@@ -37,7 +37,7 @@ class SDef(
 object K {
     const val THEME_MODE = "ui.themeMode"; const val AMOLED = "ui.amoled"; const val DYNAMIC = "ui.dynamicColor"
     const val ACCENT = "ui.accent"; const val ANIM = "ui.animations"; const val DENSITY = "ui.density"; const val LANGUAGE = "ui.language"
-    const val KEEP_ON = "ui.keepScreenOn"
+    const val KEEP_ON = "ui.keepScreenOn"; const val HIGH_REFRESH = "ui.highRefresh"
     const val FONT_FAMILY = "font.family"; const val FONT_SIZE = "font.size"; const val FONT_MIN = "font.min"; const val FONT_MAX = "font.max"
     const val FONT_STEP = "font.step"; const val LINE_SPACING = "font.lineSpacing"; const val LETTER_SPACING = "font.letterSpacing"
     const val BOLD = "font.bold"; const val LIGATURES = "font.ligatures"
@@ -47,7 +47,7 @@ object K {
     const val MATCH_BRACKETS = "editor.matchBrackets"; const val WHITESPACE = "editor.whitespace"; const val GUIDES = "editor.indentGuides"
     const val FOLDING = "editor.folding"; const val CURSOR_STYLE = "editor.cursorStyle"; const val CURSOR_BLINK = "editor.cursorBlink"
     const val HL_ENABLED = "hl.enabled"; const val HL_DARK = "hl.themeDark"; const val HL_LIGHT = "hl.themeLight"
-    const val HL_MAX_LINE = "hl.maxLineChars"; const val HL_MAX_MB = "hl.maxFileMb"
+    const val HL_MAX_LINE = "hl.maxLineChars"; const val HL_MAX_MB = "hl.maxFileMb"; const val LANG_ASSOC = "hl.assoc"
     const val S_CASE = "search.matchCase"; const val S_WORD = "search.wholeWord"; const val S_REGEX = "search.regex"
     const val S_WRAP = "search.wrapAround"; const val S_HL_ALL = "search.highlightAll"; const val S_KEEP_OPEN = "search.keepOpen"
     const val S_USE_SEL = "search.useSelection"
@@ -95,6 +95,8 @@ object Schema {
         e(K.LANGUAGE, Section.APPEARANCE, "auto", "Язык интерфейса", "Interface language",
             listOf(Opt("auto", "Как в системе", "System"), Opt("ru", "Русский", "Russian"), Opt("en", "English", "English")), kw = "language язык"),
         b(K.KEEP_ON, Section.APPEARANCE, false, "Не гасить экран", "Keep screen on"),
+        b(K.HIGH_REFRESH, Section.APPEARANCE, true, "Максимальная частота экрана (90/120 Гц)", "Highest screen refresh rate (90/120 Hz)",
+            "Просит у системы самый быстрый режим экрана, пока приложение открыто", "Asks the system for the fastest display mode while the app is open", kw = "fps hz герц частота плавность smooth"),
 
         // ---- font
         st(K.FONT_FAMILY, Section.FONT, "jetbrains-mono", "Шрифт", "Font family", kw = "font шрифт ttf otf import импорт", hidden = true),
@@ -102,7 +104,7 @@ object Schema {
         f(K.FONT_MIN, Section.FONT, 6f, 4.0, 20.0, 1.0, "Минимальный размер", "Minimum size"),
         f(K.FONT_MAX, Section.FONT, 48f, 20.0, 96.0, 1.0, "Максимальный размер", "Maximum size"),
         f(K.FONT_STEP, Section.FONT, 1f, 0.5, 4.0, 0.5, "Шаг изменения размера", "Size step", "Для кнопок «+/−» в меню", "For the +/- buttons in the menu"),
-        f(K.LINE_SPACING, Section.FONT, 1.25f, 1.0, 2.5, 0.05, "Межстрочный интервал", "Line spacing"),
+        f(K.LINE_SPACING, Section.FONT, 1.0f, 0.8, 2.5, 0.05, "Межстрочный интервал", "Line spacing", "1.0 — естественная высота строки шрифта", "1.0 = the font's natural line height", kw = "line height интервал высота строки"),
         f(K.LETTER_SPACING, Section.FONT, 0f, -0.1, 0.5, 0.01, "Межбуквенный интервал", "Letter spacing"),
         b(K.BOLD, Section.FONT, false, "Жирный текст", "Bold text"),
         b(K.LIGATURES, Section.FONT, false, "Лигатуры", "Ligatures", "Для шрифтов с лигатурами (JetBrains Mono)", "For ligature fonts (JetBrains Mono)"),
@@ -110,7 +112,7 @@ object Schema {
         // ---- editor
         b(K.LINE_NUMBERS, Section.EDITOR, true, "Нумерация строк", "Line numbers"),
         e(K.LN_BASE, Section.EDITOR, "1", "Нумерация с", "Numbering starts at", listOf(Opt("1", "1", "1"), Opt("0", "0", "0"))),
-        i(K.LN_DIGITS, Section.EDITOR, 3, 1, 8, "Минимальная ширина номера (цифр)", "Minimum number width (digits)"),
+        i(K.LN_DIGITS, Section.EDITOR, 2, 1, 8, "Минимальная ширина номера (цифр)", "Minimum number width (digits)"),
         b(K.CUR_LINE, Section.EDITOR, true, "Подсвечивать текущую строку", "Highlight current line"),
         b(K.WRAP, Section.EDITOR, false, "Перенос строк", "Word wrap"),
         i(K.TAB_SIZE, Section.EDITOR, 4, 1, 16, "Размер табуляции", "Tab size"),
@@ -131,6 +133,7 @@ object Schema {
         st(K.HL_LIGHT, Section.HIGHLIGHT, "light-plus", "Тема подсветки (светлая)", "Highlight theme (light)", hidden = true),
         i(K.HL_MAX_LINE, Section.HIGHLIGHT, 10_000, 200, 200_000, "Макс. длина подсвечиваемой строки", "Max highlighted line length", "Более длинные строки не разбираются (защита от лагов)", "Longer lines are not tokenized (protects against lag)", step = 100),
         i(K.HL_MAX_MB, Section.HIGHLIGHT, 4096, 1, 8192, "Подсвечивать файлы до (МБ)", "Highlight files up to (MB)", "Для больших файлов подсвечивается только видимая область", "Large files are highlighted lazily around the viewport", step = 16),
+        st(K.LANG_ASSOC, Section.HIGHLIGHT, "{}", "Запомненные языки по расширению", "Remembered language per extension", hidden = true),
 
         // ---- search
         b(K.S_CASE, Section.SEARCH, false, "Учитывать регистр по умолчанию", "Match case by default"),

@@ -38,6 +38,20 @@ class SchemaTests {
         assertTrue(r.ok); assertEquals(1, r.warnings.size); assertEquals(8, r.values["editor.tabSize"])
     }
 
+    @Test fun tightLayoutAndHighRefreshDefaults() {
+        val s = Settings()
+        assertEquals(1.0f, s.float(K.LINE_SPACING), 0f)
+        assertEquals(2, s.int(K.LN_DIGITS))
+        assertTrue(s.bool(K.HIGH_REFRESH))
+        assertEquals("{}", s.str(K.LANG_ASSOC))
+        assertTrue(Schema.byKey[K.LANG_ASSOC]!!.hidden)
+        val d = Schema.byKey[K.LINE_SPACING]!!
+        assertEquals(0.8, d.min, 0.0)
+        assertEquals(0.8f, Schema.coerce(d, 0.8f) as Float, 0f)       // tighter than the natural line height is allowed
+        assertNull(Schema.coerce(d, 0.7f))
+        assertNotNull(Schema.coerce(Schema.byKey[K.LANG_ASSOC]!!, "x".repeat(1900)))
+    }
+
     @Test fun partialImportKeepsOthers() {
         val cur = Settings().with(K.TAB_SIZE, 3)
         val r = Schema.parseImport("""{"format":"codeedit-settings","version":1,"settings":{"editor.wordWrap":true}}""".toByteArray())
